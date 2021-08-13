@@ -1,0 +1,156 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    container_name: elasticsearch
+    build:
+      context: elasticsearch/
+      args:
+        ELK_VERSION: $ELK_VERSION
+    volumes:
+      - type: bind
+        source: ./elasticsearch/config/elasticsearch.yml
+        target: /usr/share/elasticsearch/config/elasticsearch.yml
+        read_only: true
+      # - ./elasticsearch/data:/usr/share/elasticsearch/data
+      - type: volume
+        source: elasticsearch
+        target: /usr/share/elasticsearch/data
+    ports:
+      - 9200:9200
+      - 9300:9300
+    environment:
+      # ES_JAVA_OPTS: "-Xms750m -Xmx750m"
+      ELASTIC_PASSWORD: pwd
+      # Use single node discovery in order to disable production mode and avoid bootstrap checks.
+      # see: https://www.elastic.co/guide/en/elasticsearch/reference/current/bootstrap-checks.html
+      discovery.type: single-node
+    networks:
+      - stream
+
+  logstash:
+    container_name: logstash
+    build:
+      context: logstash/
+      args:
+        ELK_VERSION: $ELK_VERSION
+    volumes:
+      - type: bind
+        source: ./logstash/config/logstash.yml
+        target: /usr/share/logstash/config/logstash.yml
+        read_only: true
+      - type: bind
+        source: ./logstash/pipeline
+        target: /usr/share/logstash/pipeline
+        read_only: true
+    ports:
+      - 5044:5044
+      - 5000:5000/tcp
+      - 5000:5000/udp
+      - 9600:9600
+    # environment:
+      # LS_JAVA_OPTS: "-Xmx1g -Xms1g"
+    networks:
+      - stream
+    depends_on:
+      - elasticsearch
+      - kafka
+
+  kibana:
+    container_name: kibana
+    build:
+      context: kibana/
+      args:
+        ELK_VERSION: $ELK_VERSION
+    volumes:
+      - type: bind
+        source: ./kibana/config/kibana.yml
+        target: /usr/share/kibana/config/kibana.yml
+        read_only: true
+    ports:
+      - 5601:5601
+    networks:
+      - stream
+    depends_on:
+      - elasticsearch
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:$BROKER_VERSION
+    hostname: zookeeper
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - stream
+
+  kafka:
+    image: confluentinc/cp-kafka:$BROKER_VERSION
+    container_name: kafka
+    ports:
+      - 9092:9092
+    depends_on:
+      - zookeeper
+    networks:
+      - stream
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  mongodb:
+    image : mongo
+    container_name: mongodb
+    environment:
+    - PUID=1000
+    - PGID=1000
+    volumes:
+    - type: volume
+      source: mongodb
+      target: /usr/share/mongodb/data
+    ports:
+    - 27017:27017
+    restart: unless-stopped
+    networks:
+      - stream
+
+  consumer:
+    image: forsvinne/kafka-client
+    container_name: consumer
+    depends_on: 
+      - kafka
+      - mongodb
+    networks:
+      - stream
+
+  producer:
+    image: forsvinne/kafka-server
+    container_name: producer
+    ports:
+    - 9000:9000
+    depends_on: 
+      - kafka
+    networks:
+      - stream
+
+  ng:
+    image: forsvinne/ng-datasource
+    container_name: angular
+    ports:
+    - 8080:80
+    depends_on: 
+      - producer
+    networks:
+      - stream
+
+networks:
+  stream:
+    driver: bridge
+
+volumes:
+  elasticsearch:
+  mongodb:
